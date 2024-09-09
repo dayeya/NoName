@@ -16,7 +16,7 @@ async def main():
         conf=configuration,
         ucid=8585,
         local=True,
-        with_tunneling=True,
+        with_tunneling=False,
     )
     await engine.deploy()
     await engine.work()

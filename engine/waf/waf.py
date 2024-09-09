@@ -34,6 +34,9 @@ from engine.internal.events import (
 )
 from engine.internal.tokenization import tokenize
 from engine.internal.signature_db import SignatureDb
+from engine.internal.rate_limiting import TokenBucketLimiter
+from engine.internal.connection_pool import get_connection_pool, get_redis
+from engine.internal.core import WafResponseCode
 from engine.internal.core.profile import Profile
 from engine.internal.core.transaction import Transaction
 from engine.internal.core.managers.ban_manager import BanManager
@@ -44,7 +47,7 @@ from engine.internal.core.vuln_checks import check_transaction, validate_dirty_c
 
 
 class _WafState(Enum):
-    """An enum allowing state handling for Waf."""
+    """An enum for state handling."""
     CREATED = "Created"
     DEPLOYED = "Deployed"
     WORKING = "Working"
@@ -99,10 +102,12 @@ class Waf:
         self.__deploy_time = None
         self.__health = deque([])
         self.__with_tunneling = with_tunneling
-        self.__tunnel = Tunnel(conf.admin["backend_api"])
-        self.__ban_manager = BanManager()
-        self.__event_manager = EventManager()
         self.__profile_manager = ProfileManager()
+        self.__tunnel = Tunnel(conf.admin["backend_api"])
+        self.__connection_pool = get_connection_pool(host=conf.waf["redis_host"], port=conf.waf["redis_port"], db=0)
+        self.__rate_limiter = TokenBucketLimiter(self.__connection_pool, conf.ratelimit["max_burst"], conf.ratelimit["interval"])
+        self.__ban_manager = BanManager(get_redis(connection_pool=self.__connection_pool, decode_responses=True))
+        self.__event_manager = EventManager(get_redis(connection_pool=self.__connection_pool, decode_responses=True))
         self.__acl = AccessList(main_list=[],
                                 api=conf.acl["api"],
                                 interval=conf.acl["interval"],
@@ -167,6 +172,10 @@ class Waf:
                     event = (TunnelEvent.WafHealthUpdate, list(self.__health))
                     await self.__tunnel.register_event(pickle.dumps(event))
 
+    def can_transfer(self, client: Connection):
+        """Checks is the client is rate limited."""
+        return self.__rate_limiter.consume(client.ip, self.__config.ratelimit["consumeRate"])
+
     def __set_connection_profile(self, client: Connection):
         """
         Creates a new profile with a last_event of connection (only if the client is not in the db).
@@ -214,7 +223,7 @@ class Waf:
         self.__event_manager.cache_event(event)
 
     @register_event(TunnelEvent.SecurityLogUpdate)
-    async def __handle_unauthorized_client(self, client: Connection, event: Event):
+    async def __handle_unauthorized_client(self, client: Connection, event: Event, unique_response: WafResponseCode):
         """
         Handles an event made by an unauthorized user.
         :param event:
@@ -263,7 +272,7 @@ class Waf:
             "header": security_page_header,
             "further_information": further_information,
             "token": event.id
-        })
+        }, waf_response=unique_response)
         await forward_data(client, security_page)
 
     @register_event(TunnelEvent.WafServicesUpdate)
@@ -277,11 +286,32 @@ class Waf:
         # Change the IP of the connection to the external ip of the Waf instance.
         # This change happens only when the Waf instance is configured to be a local cluster.
         ip, port = writer.get_extra_info(REMOTE_ADDR)
+
         if self.__local:
             ip = get_external_ip()
 
         client = Connection(stream=AsyncStream(reader, writer), addr=HostAddress(ip, port))
         self.__set_connection_profile(client)
+
+        if not self.can_transfer(client):
+            security_log = SecurityLog(
+                ip=client.ip,
+                port=client.port,
+                download=True,
+                sys_epoch_time=get_epoch_time(),
+                creation_date=get_unix_time(self.__config.timezone["time_zone"]),
+                classifiers=[Classifier.RateLimited],
+                geolocation=get_geoip_data(client.ip)
+            )
+            event = Event(
+                kind=UNAUTHORIZED_REQUEST,
+                id=tokenize(),
+                log=security_log,
+                request=None,
+                response=None,
+            )
+            await self.__handle_unauthorized_client(client, event, unique_response=WafResponseCode.rateLimited)
+            return
 
         if self.__ban_manager.banned(client.hash):
             security_log = SecurityLog(
@@ -300,7 +330,7 @@ class Waf:
                 request=None,
                 response=None,
             )
-            await self.__handle_unauthorized_client(client, event)
+            await self.__handle_unauthorized_client(client, event, unique_response=WafResponseCode.regular)
             return
 
         access_list = self.__acl
@@ -326,7 +356,7 @@ class Waf:
                 request=None,
                 response=None,
             )
-            await self.__handle_unauthorized_client(client, event)
+            await self.__handle_unauthorized_client(client, event, unique_response=WafResponseCode.regular)
             return
 
         request = await recv_from_client(client, execption_callback=client.close)
@@ -359,7 +389,7 @@ class Waf:
                 request=tx,
                 response=None,
             )
-            await self.__handle_unauthorized_client(client, event)
+            await self.__handle_unauthorized_client(client, event, unique_response=WafResponseCode.regular)
             return
 
         access_log = AccessLog(
@@ -458,10 +488,11 @@ class Waf:
         # Run instance, state is _WafState.DEPLOYED.
         async with self.__server:
             acl_thread = create_new_thread(func=self.start_acl_loop, args=(), daemon=True)
-            cpu_thread = create_new_thread(func=self.start_cpu_loop, args=(), daemon=True)
-
             acl_thread.start()
-            cpu_thread.start()
+
+            if self.__with_tunneling:
+                cpu_thread = create_new_thread(func=self.start_cpu_loop, args=(), daemon=True)
+                cpu_thread.start()
 
             work = [
                 create_new_task(task_name="WAF_WORKER", task=self.__server.serve_forever, args=()),
@@ -472,7 +503,8 @@ class Waf:
             print(f"INFO: Waf listening AT {self.__address}")
             self.__state = _WafState.WORKING
             self.__deploy_time = get_unix_time(self.__config.timezone["time_zone"])
-            await asyncio.gather(*work if self.__with_tunneling else work[0])
+
+            await asyncio.gather(*work if self.__with_tunneling else [work[0]])
 
     async def restart(self):
         """

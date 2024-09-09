@@ -28,6 +28,7 @@ class Classifier(StrEnum):
     BannedAccess = "Banned Access"
     BannedGeolocation = "Banned Geolocation"
     Anonymity = "Anonymization"
+    RateLimited = "Too Many Requests"
 
 
 __all__ = [

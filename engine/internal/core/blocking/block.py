@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlunparse
 from jinja2 import Environment, FileSystemLoader
 
+from .._types import WafResponseCode
 from ..transaction import Transaction
 from engine.singleton import Singleton
 
@@ -53,15 +54,12 @@ class TemplateEnv(Environment, metaclass=Singleton):
         return general_template.render(**kwargs).encode("utf-8")
 
 
-def create_security_page(info):
-    """
-    Builds a security page based on parameters inside info.
-    :param info:
-    :return:
-    """
+def create_security_page(info, waf_response: WafResponseCode):
+    """Builds a security page based on parameters inside info."""
+    code, message = waf_response.value[0]
     html: bytes = TemplateEnv().render_kwargs(**info)
     content_length = str(len(html)).encode("utf-8")
-    response = b"HTTP/1.1 200 OK\r\n"
+    response = b"HTTP/1.1 " + code + b" " + message + b"\r\n"
     response += b"Content-Type: text/html; charset=utf-8\r\n"
     response += b"Content-Length: " + content_length + b"\r\n"
     response += b"Connection: close\r\n\r\n"

@@ -10,10 +10,12 @@ port = 50000
 [Waf]
 ip = "0.0.0.0"
 port = 8080
+redis_host="localhost"
+redis_port=6379
 
 
 [Admin]
-backend_api = "ws://localhost:8765"
+backend_api = "ws://172.16.6.66:8765"
 
 ### Further sections are related to WAF features.
 
@@ -52,3 +54,8 @@ geo_additional_info = ["We suggest you try to connect to our services without id
 dirty_header = "Anonymization software and a banned geolocation have been detected."
 dirty_additional_info = ["You are seeing this page because we have found your location to be untrusted",
                          "additionaly, we found anonymization attempt via anonymization software."]
+
+[RateLimit]
+max_burst = 50
+interval = 60 # 1 minute.
+consumeRate = 1 # Consumes 1 Tokens at a time.

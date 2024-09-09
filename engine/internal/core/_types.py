@@ -3,6 +3,7 @@
 # Author: Dayeya
 #
 
+from enum import Enum
 from typing import Callable
 from dataclasses import dataclass
 
@@ -40,3 +41,9 @@ class CheckResult:
     """
     result: bool
     classifiers: list[Classifier]
+
+
+class WafResponseCode(Enum):
+    """HTTP codes for unique responses."""
+    regular = (b"200", b"OK"),
+    rateLimited = (b"429", b"Too Many Requests")

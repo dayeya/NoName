@@ -38,8 +38,11 @@ class AsyncStream:
         self.__writer = writer
 
     async def write(self, data: bytes):
-        self.__writer.write(data)
-        await self.__writer.drain()
+        try:
+            self.__writer.write(data)
+            await self.__writer.drain()
+        except ConnectionResetError:
+            pass
 
     async def close(self):
         self.__writer.close()

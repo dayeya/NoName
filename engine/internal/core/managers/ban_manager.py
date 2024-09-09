@@ -7,6 +7,9 @@ import redis
 from engine.singleton import Singleton
 
 
+BANS = "bans"
+
+
 class BanManager(metaclass=Singleton):
     """
     A wrapper class to redis.Redis representing a ban manager.
@@ -17,29 +20,21 @@ class BanManager(metaclass=Singleton):
     2. A client is freed when a ban is over or when the admin removes the ban.
     3. A ban is extended when a client exceeds the attack threshold.
     """
-    def __init__(self, host="localhost", ban_namespace="bans", port=6379, logs=True):
+    def __init__(self, r: redis.Redis, logs=True):
         try:
             self.__logs = logs
-            self.__ban_namespace = ban_namespace
-            self.r = redis.Redis(host=host, port=port, decode_responses=True)
+            self.__connection = r
         except redis.exceptions.ConnectionError:
             print("Redis server is not running. Please run scripts/run_redis before deploying.")
 
     def log(self, msg: str):
-        """
-        Log `msg` if __logs is True.
-        :param msg:
-        :return:
-        """
+        """Log `msg` if __logs is True."""
         if self.__logs:
             print(msg)
 
     def redis_alive(self) -> bool:
-        """
-        Checks the connection to the redis server.
-        :return:
-        """
-        return self.r.ping()
+        """Checks the connection to the redis server."""
+        return self.__connection.ping()
 
     def insert_mapping(self, client_hash: str, banned_at: float, ban_duration: float):
         """
@@ -50,9 +45,9 @@ class BanManager(metaclass=Singleton):
         :param banned_at:
         :return:
         """
-        self.r.hset(f'{self.__ban_namespace}:{client_hash}', key="banned_at", value=str(banned_at))
-        self.r.hset(f'{self.__ban_namespace}:{client_hash}', key="duration_remaining", value=str(ban_duration))
-        self.r.expire(f'{self.__ban_namespace}:{client_hash}', time=int(ban_duration))
+        self.__connection.hset(f'{BANS}:{client_hash}', key="banned_at", value=str(banned_at))
+        self.__connection.hset(f'{BANS}:{client_hash}', key="duration_remaining", value=str(ban_duration))
+        self.__connection.expire(f'{BANS}:{client_hash}', time=int(ban_duration))
 
     def get_mapping(self, client_hash: str) -> dict:
         """
@@ -60,10 +55,10 @@ class BanManager(metaclass=Singleton):
         :param client_hash:
         :return:
         """
-        if not self.r.exists(client_hash):
+        if not self.__connection.exists(client_hash):
             self.log(f"Given argument {client_hash} does not exist in the cache")
             return {}
-        return self.r.hgetall(client_hash)
+        return self.__connection.hgetall(client_hash)
 
     def remove_client(self, client_hash: str):
         """
@@ -71,9 +66,9 @@ class BanManager(metaclass=Singleton):
         :param client_hash:
         :return:
         """
-        if not self.r.exists(client_hash):
+        if not self.__connection.exists(client_hash):
             self.log(f"Given argument {client_hash} does not exist in the cache")
-        self.r.hdel(client_hash)
+        self.__connection.hdel(client_hash)
 
     def banned(self, client_hash: str) -> bool:
         """
@@ -81,4 +76,4 @@ class BanManager(metaclass=Singleton):
         :param client_hash:
         :return:
         """
-        return self.r.exists(f'{self.__ban_namespace}:{client_hash}')
+        return self.__connection.exists(f'{BANS}:{client_hash}')
