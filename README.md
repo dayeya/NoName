@@ -21,11 +21,11 @@ Below are the milestones of the project:
 - [X] Sqli
 - [X] Unauthorized Access
 - [X] Xss
-- [ ] Bruteforce
+- [X] Bruteforce
+- [X] Rate limiting
+- [X] UI
 - [ ] File Inclusion
-- [ ] Rate limiting
 - [ ] Simulations directory
-- [ ] UI
 
 Future milestones include:
 - [ ] CSRF
